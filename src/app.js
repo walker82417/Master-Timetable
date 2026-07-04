@@ -25,8 +25,22 @@ const baseRows = [
   ['10:00 – 10:15 PM', 'SLEEP PREPARATION', 'Good Sleep, Better Tomorrow', '7 – 8 Hours Sleep', '🌙', 'normal'],
 ];
 
-const checklistItems = ['Exercise', 'Breakfast', 'Wake before 6', 'Revision', 'Theory', 'Numericals', 'PYQ', 'Sleep before 10'];
-const rotationItems = ['Mon  Network Theory + Engineering Maths', 'Tue  Electrical Machines', 'Wed  Power Systems', 'Thu  Control Systems', 'Fri  Power Electronics', 'Sat  Electronics (Analog + Digital)', 'Sun  Full Length Mock Test + Revision'];
+const coverage = ['UPSC ESE (Electrical)', 'MPSC Engineering Services', 'SSC JE', 'RRB JE / SSE', 'SSC CGL / CHSL / MTS', 'SSC GD', 'Railways NTPC / Group D & Other Govt. Exams'];
+const distribution = [
+  ['technical', 'TECHNICAL', '(Electrical Engg.)'],
+  ['aptitude', 'APTITUDE', '(Quant + Reasoning)'],
+  ['gs', 'GS + ENGLISH', '(Current Affairs, GK, English)'],
+];
+const rotation = [
+  ['Mon', 'Network Theory + Engineering Maths'],
+  ['Tue', 'Electrical Machines'],
+  ['Wed', 'Power Systems'],
+  ['Thu', 'Control Systems'],
+  ['Fri', 'Power Electronics'],
+  ['Sat', 'Electronics (Analog + Digital)'],
+  ['Sun', 'Full Length Mock Test + Revision'],
+];
+const rules = ['Be Consistent', 'Follow the Plan', 'Avoid Distractions', 'Revise Regularly', 'Take Mock Tests', 'Analyze & Improve', 'Believe in Yourself'];
 const quotes = [
   ['The harder you work for something, the greater you’ll feel when you achieve it.', 'mountain'],
   ['Don’t stop when you’re tired. Stop when you’re done.', 'sunrise'],
@@ -47,14 +61,9 @@ function makeSession(row, id) {
   return { id, time: row[0], activity: row[1], focus: row[2], benefit: row[3], icon: row[4], color: row[5], start, end, plannedSeconds: duration, remainingSeconds: duration, status: STATUS.NOT_STARTED, actualSeconds: 0, pauseSeconds: 0, extraSeconds: 0, notes: '', originalTime: row[0] };
 }
 
-function loadState() {
-  const fresh = { day: DAY_KEY, activeId: null, sessions: baseRows.map(makeSession), pending: [], checklist: {}, heatmap: {}, frozenSummary: null, reports: [] };
-  try {
-    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY));
-    if (saved?.day === DAY_KEY) return { ...fresh, ...saved, sessions: saved.sessions || fresh.sessions };
-    if (saved?.pending?.length) fresh.pending = saved.pending;
-  } catch { /* ignore corrupt local storage */ }
-  return fresh;
+function renderHeader() {
+  renderList('promise-list', promises, '✓');
+  document.getElementById('exam-strip').innerHTML = exams.map((exam, index) => `<span class="exam-${index}">${exam}</span>`).join('<b>|</b>');
 }
 
 function saveState({ syncCloud = true } = {}) {
@@ -113,11 +122,11 @@ function render({ persist = true, syncCloud = true } = {}) {
   if (persist) saveState({ syncCloud });
 }
 
-function buttons(s) {
-  if (s.status === STATUS.COMPLETED) return '<span class="locked">✓</span>';
-  if (s.status === STATUS.RUNNING) return '<button data-act="pause">⏸ PAUSE</button><button data-act="extend">➕ EXTEND</button><button data-act="complete">✓ COMPLETE</button>';
-  if (s.status === STATUS.PAUSED) return '<button data-act="resume">▶ RESUME</button><button data-act="complete">✓ COMPLETE</button>';
-  return '<button data-act="start">▶ START</button>';
+function renderBottomPanels() {
+  renderList('exam-coverage', coverage, '✓');
+  document.getElementById('distribution-legend').innerHTML = distribution.map(([type, title, detail]) => `<li><span class="swatch ${type}"></span><b>${title}</b><small>${detail}</small></li>`).join('');
+  document.getElementById('weekly-rotation').innerHTML = rotation.map(([day, subject]) => `<p><strong>${day}</strong><span>${subject}</span></p>`).join('');
+  renderList('golden-rules', rules, '★');
 }
 
 function renderChecklist() { document.getElementById('checklist').innerHTML = checklistItems.map(item => `<li><label><input type="checkbox" data-check="${item}" ${state.checklist[item] ? 'checked' : ''}> ${item}</label></li>`).join(''); }
