@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Universal Study Timetable</title>
+    <link rel="stylesheet" href="src/styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="hero">
+        <div class="promise">
+          <div class="bulb">💡</div>
+          <ul>
+            <li>✅ Plan Your Work</li>
+            <li>✅ Work Your Plan</li>
+            <li>✅ Stay Consistent</li>
+            <li>✅ Success is Inevitable</li>
+          </ul>
+        </div>
+        <div class="title-block">
+          <h1>UNIVERSAL STUDY TIMETABLE</h1>
+          <div class="exam-strip">UPSC ESE (ELECTRICAL) <b>|</b> MPSC <b>|</b> SSC JE <b>|</b> RRB JE <b>|</b> SSC CGL <b>|</b> RAILWAYS &amp; OTHER GOVT. EXAMS</div>
+          <div class="motto">★★&nbsp;&nbsp; ONE DAY OR DAY ONE. YOU DECIDE. &nbsp;&nbsp;★★</div>
+        </div>
+        <div class="focus">
+          <div class="target">🎯</div>
+          <p>FOCUS<br />DISCIPLINE<br /><span>SUCCESS</span></p>
+        </div>
+      </header>
+
+      <section class="content">
+        <div class="table-zone">
+          <div class="session-panel" id="session-panel">
+            <div><small>CURRENT SESSION</small><strong id="panel-subject">No Active Session</strong></div>
+            <div><small>TIMER</small><strong id="panel-timer">00:00:00</strong></div>
+            <div><small>STATUS</small><strong id="panel-status">NOT STARTED</strong></div>
+            <div><small>NEXT PLANNED</small><strong id="panel-next">--</strong></div>
+            <button id="switch-subject">Switch Subject</button>
+          </div>
+          <div class="table-card">
+            <table>
+              <thead>
+                <tr><th>TIME</th><th>ACTIVITY</th><th>FOCUS / SUBJECT</th><th>BENEFIT</th><th>ACTION</th></tr>
+              </thead>
+              <tbody id="schedule"></tbody>
+            </table>
+          </div>
+        </div>
+        <aside class="motivation">
+          <h2>↭ Motivation for Champions ↭</h2>
+          <div id="quotes"></div>
+          <div class="remember"><strong>REMEMBER</strong><p>CONSISTENCY + DISCIPLINE + PATIENCE = <b>SUCCESS</b></p><span>🏆</span></div>
+        </aside>
+      </section>
+
+      <section class="bottom-grid">
+        <div class="panel checklist"><h3>DAILY CHECKLIST</h3><ul class="checks" id="checklist"></ul></div>
+        <div class="panel"><h3>STUDY DISTRIBUTION (ACTUAL)</h3><div class="chart"><div class="pie" id="pie"></div><div class="legend" id="legend"></div></div></div>
+        <div class="panel"><h3>WEEKLY ROTATION + HEATMAP</h3><div class="rotation" id="rotation"></div><div class="heatmap" id="heatmap"></div></div>
+        <div class="panel"><h3>PENDING MISSIONS / PROGRESS</h3><div class="missions" id="missions"></div><div class="summary" id="summary"></div></div>
+      </section>
+
+      <footer><span>🏆 FOCUS ON YOUR GOAL. DON’T LOOK IN ANY DIRECTION BUT AHEAD.</span><span>|</span><span>YOUR HARD WORK WILL DEFINITELY PAY OFF.</span><span>★★★</span></footer>
+      <div class="status"><span>🕒 Current Session: <b id="current-session"></b></span><span id="clock"></span><span>Progress: <b id="progress">0%</b></span><span><b id="today"></b> Completion: <meter min="0" max="100" value="0" id="meter"></meter></span></div>
+    </main>
+    <dialog id="extend-dialog"><form method="dialog"><h3>Extend Session</h3><menu><button value="15">15 Minutes</button><button value="30">30 Minutes</button><button value="45">45 Minutes</button><button value="60">60 Minutes</button><button value="custom">Custom</button></menu></form></dialog>
+    <dialog id="switch-dialog"><form method="dialog"><h3>Switch Subject</h3><select id="switch-list"></select><menu><button value="cancel">Cancel</button><button value="switch">Start Selected</button></menu></form></dialog>
+    <script src="src/firebase-sync.js"></script>
+    <script src="src/app.js"></script>
+  </body>
+</html>
