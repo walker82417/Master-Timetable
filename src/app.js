@@ -1,4 +1,6 @@
-const STORAGE_KEY = 'aaroh-interactive-timetable-v2';
+const STORAGE_KEY = 'aaroh-interactive-timetable-v3';
+const HISTORY_KEY = 'aaroh-preparation-history-v1';
+const CLOUD_QUEUE_KEY = 'aaroh-cloud-sync-queue-v1';
 const DAY_KEY = new Date().toISOString().slice(0, 10);
 const STATUS = { NOT_STARTED: 'NOT STARTED', RUNNING: 'RUNNING', PAUSED: 'PAUSED', COMPLETED: 'COMPLETED' };
 
@@ -44,7 +46,7 @@ function makeSession(row, id) {
 }
 
 function loadState() {
-  const fresh = { day: DAY_KEY, activeId: null, sessions: baseRows.map(makeSession), pending: [], checklist: {}, heatmap: {}, frozenSummary: null };
+  const fresh = { day: DAY_KEY, activeId: null, sessions: baseRows.map(makeSession), pending: [], checklist: {}, heatmap: {}, frozenSummary: null, reports: [] };
   try {
     const saved = JSON.parse(localStorage.getItem(STORAGE_KEY));
     if (saved?.day === DAY_KEY) return { ...fresh, ...saved, sessions: saved.sessions || fresh.sessions };
@@ -53,7 +55,40 @@ function loadState() {
   return fresh;
 }
 
-function saveState() { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
+function saveState() {
+  const analytics = buildAnalytics();
+  state.analytics = analytics.today;
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  persistHistory(analytics);
+  enqueueCloudSync(analytics);
+}
+
+function readHistory() {
+  try { return JSON.parse(localStorage.getItem(HISTORY_KEY)) || { firstStudyDay: null, firstCompletedSession: null, days: {}, reports: [], emailHistory: [] }; }
+  catch { return { firstStudyDay: null, firstCompletedSession: null, days: {}, reports: [], emailHistory: [] }; }
+}
+
+function persistHistory(analytics) {
+  const history = readHistory();
+  if (analytics.today.actualStudySeconds > 0 && !history.firstStudyDay) history.firstStudyDay = DAY_KEY;
+  const firstDone = state.sessions.find(s => s.status === STATUS.COMPLETED);
+  if (firstDone && !history.firstCompletedSession) history.firstCompletedSession = { day: DAY_KEY, activity: firstDone.activity, completedAt: firstDone.completedAt };
+  history.days[DAY_KEY] = { ...analytics.today, sessions: state.sessions.map(sessionSnapshot), pending: state.pending.map(sessionSnapshot), checklist: state.checklist, notes: state.sessions.filter(s => s.notes).map(s => ({ activity: s.activity, notes: s.notes })) };
+  history.lifetime = analytics.lifetime;
+  localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
+}
+
+function enqueueCloudSync(analytics) {
+  const item = { type: 'study-day', day: DAY_KEY, createdAt: new Date().toISOString(), payload: analytics.today };
+  try {
+    const queue = JSON.parse(localStorage.getItem(CLOUD_QUEUE_KEY)) || [];
+    queue.push(item);
+    localStorage.setItem(CLOUD_QUEUE_KEY, JSON.stringify(queue.slice(-100)));
+    if (window.AarohCloudSync) window.AarohCloudSync.syncDay(DAY_KEY, analytics).catch(() => {});
+  } catch { /* local queue is best-effort for offline cloud sync */ }
+}
+
+function sessionSnapshot(s) { return { id: s.id, activity: s.activity, focus: s.focus, originalTime: s.originalTime, plannedSeconds: s.plannedSeconds, actualSeconds: s.actualSeconds, pauseSeconds: s.pauseSeconds, extraSeconds: s.extraSeconds, remainingSeconds: s.remainingSeconds, status: s.status, notes: s.notes || '', completedAt: s.completedAt || null }; }
 function parseClock(text) { const m = text?.match(/(\d+):(\d+)\s*(AM|PM)/i); if (!m) return 0; let h = +m[1]; if (m[3].toUpperCase() === 'PM' && h !== 12) h += 12; if (m[3].toUpperCase() === 'AM' && h === 12) h = 0; return h * 60 + +m[2]; }
 function fmt(sec) { sec = Math.max(0, Math.round(sec)); const h = String(Math.floor(sec / 3600)).padStart(2, '0'); const m = String(Math.floor(sec % 3600 / 60)).padStart(2, '0'); const s = String(sec % 60).padStart(2, '0'); return `${h}:${m}:${s}`; }
 function hours(sec) { return (sec / 3600).toFixed(1); }
@@ -82,6 +117,69 @@ function actualSeconds() { return state.sessions.reduce((sum, s) => sum + s.actu
 function plannedSeconds() { return studySessions().reduce((sum, s) => sum + s.plannedSeconds + s.extraSeconds, 0); }
 function progressPct() { return Math.round(state.sessions.filter(s => s.status === STATUS.COMPLETED).length / state.sessions.length * 100); }
 
+function buildAnalytics() {
+  const history = readHistory();
+  const today = buildDayAnalytics(DAY_KEY, state.sessions, state.pending);
+  const completedDays = { ...history.days, [DAY_KEY]: today };
+  const allDays = Object.values(completedDays);
+  const currentMonth = DAY_KEY.slice(0, 7);
+  const weekDays = lastNDays(7).map(day => completedDays[day]).filter(Boolean);
+  const monthDays = Object.entries(completedDays).filter(([day]) => day.startsWith(currentMonth)).map(([, value]) => value);
+  const weekly = aggregatePeriod(weekDays, 'week');
+  const monthly = aggregatePeriod(monthDays, 'month');
+  const lifetime = aggregatePeriod(allDays, 'lifetime');
+  lifetime.firstStudyDay = history.firstStudyDay || (today.actualStudySeconds > 0 ? DAY_KEY : null);
+  lifetime.firstCompletedSession = history.firstCompletedSession;
+  lifetime.totalStudyDays = allDays.filter(d => d.actualStudySeconds > 0).length;
+  lifetime.longestStudyDay = allDays.reduce((best, day) => day.actualStudySeconds > (best?.actualStudySeconds || 0) ? day : best, null);
+  const subjects = buildSubjectAnalytics(allDays);
+  return { today, weekly, monthly, lifetime, subjects, insights: buildInsights(allDays, subjects) };
+}
+
+function buildDayAnalytics(day, sessions, pending) {
+  const complete = sessions.filter(s => s.status === STATUS.COMPLETED);
+  const studied = sessions.filter(s => s.actualSeconds > 0);
+  const missed = sessions.filter(s => s.status !== STATUS.COMPLETED && s.end < new Date().getHours() * 60 + new Date().getMinutes());
+  const longest = studied.reduce((best, s) => s.actualSeconds > (best?.actualSeconds || 0) ? s : best, null);
+  const shortest = studied.reduce((best, s) => s.actualSeconds && s.actualSeconds < (best?.actualSeconds || Infinity) ? s : best, null);
+  return {
+    day,
+    plannedStudySeconds: plannedSeconds(),
+    actualStudySeconds: actualSeconds(),
+    completedSessions: complete.length,
+    pendingSessions: sessions.filter(s => s.status !== STATUS.COMPLETED).length + pending.length,
+    missedSessions: missed.length,
+    currentActiveSession: currentSession()?.activity || null,
+    longestSession: longest ? { activity: longest.activity, seconds: longest.actualSeconds } : null,
+    shortestSession: shortest ? { activity: shortest.activity, seconds: shortest.actualSeconds } : null,
+    totalBreakSeconds: sessions.filter(s => /BREAK|LUNCH|DINNER|FRESHEN|SLEEP|WAKE|EXERCISE/.test(s.activity)).reduce((sum, s) => sum + s.actualSeconds + s.pauseSeconds, 0),
+    extraStudySeconds: sessions.reduce((sum, s) => sum + s.extraSeconds, 0),
+    completionPercentage: progressPct(),
+    subjectDistribution: distributionFromSessions(sessions),
+    notes: sessions.filter(s => s.notes).map(s => `${s.activity}: ${s.notes}`),
+  };
+}
+
+function lastNDays(count) { return Array.from({ length: count }, (_, i) => { const d = new Date(); d.setDate(d.getDate() - (count - 1 - i)); return d.toISOString().slice(0, 10); }); }
+function aggregatePeriod(days, label) {
+  const total = days.reduce((sum, d) => sum + (d.actualStudySeconds || 0), 0);
+  const sessions = days.reduce((sum, d) => sum + (d.completedSessions || 0) + (d.pendingSessions || 0), 0);
+  const completed = days.reduce((sum, d) => sum + (d.completedSessions || 0), 0);
+  const missed = days.reduce((sum, d) => sum + (d.missedSessions || 0), 0);
+  const studiedDays = days.filter(d => d.actualStudySeconds > 0);
+  const most = studiedDays.reduce((best, d) => d.actualStudySeconds > (best?.actualStudySeconds || 0) ? d : best, null);
+  const least = studiedDays.reduce((best, d) => d.actualStudySeconds < (best?.actualStudySeconds || Infinity) ? d : best, null);
+  return { label, totalStudySeconds: total, averageDailySeconds: days.length ? total / days.length : 0, mostProductiveDay: most?.day || null, leastProductiveDay: least?.day || null, totalSessions: sessions, completedSessions: completed, missedSessions: missed, averageSessionSeconds: completed ? total / completed : 0, completionPercentage: sessions ? Math.round(completed / sessions * 100) : 0, currentStreak: calculateStreak(days), longestStreak: calculateLongestStreak(days), subjectDistribution: mergeDistributions(days) };
+}
+function calculateStreak(days) { let streak = 0; [...days].reverse().some(day => day.actualStudySeconds > 0 ? (streak++, false) : true); return streak; }
+function calculateLongestStreak(days) { let best = 0, current = 0; days.forEach(day => { current = day.actualStudySeconds > 0 ? current + 1 : 0; best = Math.max(best, current); }); return best; }
+function distributionFromSessions(sessions) { return sessions.reduce((acc, s) => { const key = subjectName(s.activity); acc[key] = (acc[key] || 0) + s.actualSeconds; return acc; }, {}); }
+function mergeDistributions(days) { return days.reduce((acc, day) => { Object.entries(day.subjectDistribution || {}).forEach(([k, v]) => { acc[k] = (acc[k] || 0) + v; }); return acc; }, {}); }
+function subjectName(activity) { if (/THEORY/.test(activity)) return 'Electrical Theory'; if (/NUMERICAL/.test(activity)) return 'Electrical Numericals'; if (/PYQ|REVISION/.test(activity)) return 'Revision'; if (/REASONING/.test(activity)) return 'Reasoning'; if (/APTITUDE/.test(activity)) return 'Quantitative Aptitude'; if (/CURRENT|GENERAL/.test(activity)) return 'Current Affairs'; if (/ENGLISH/.test(activity)) return 'English'; return activity; }
+function buildSubjectAnalytics(days) { const subjects = {}; days.forEach(day => (day.sessions || []).forEach(s => { const name = subjectName(s.activity); const item = subjects[name] || { totalSeconds: 0, completedSessions: 0, pendingSessions: 0, extraSeconds: 0, revisionCount: 0, totalSessions: 0 }; item.totalSessions += 1; item.totalSeconds += s.actualSeconds || 0; item.extraSeconds += s.extraSeconds || 0; if (s.status === STATUS.COMPLETED) item.completedSessions += 1; else item.pendingSessions += 1; if (/REVISION|PYQ/.test(s.activity)) item.revisionCount += 1; subjects[name] = item; })); Object.values(subjects).forEach(s => { s.averageSessionSeconds = s.completedSessions ? s.totalSeconds / s.completedSessions : 0; s.completionPercentage = s.totalSessions ? Math.round(s.completedSessions / s.totalSessions * 100) : 0; }); return subjects; }
+function buildInsights(days, subjects) { const insights = []; Object.entries(subjects).forEach(([name, subject]) => { if (subject.extraSeconds >= 1800) insights.push(`You extended ${name} by ${fmt(subject.extraSeconds)} in recorded sessions.`); if (subject.pendingSessions >= 3) insights.push(`${name} has ${subject.pendingSessions} pending recorded sessions.`); }); const best = days.reduce((b, d) => d.actualStudySeconds > (b?.actualStudySeconds || 0) ? d : b, null); if (best) insights.push(`Your strongest recorded day is ${best.day} with ${hours(best.actualStudySeconds)}h studied.`); return insights.slice(0, 3); }
+
+
 function renderStats() {
   const active = currentSession(); const next = state.sessions.find(s => s.status !== STATUS.COMPLETED && s.id !== active?.id);
   document.getElementById('panel-subject').textContent = active?.activity || activeByClock()?.activity || 'No Active Session';
@@ -89,13 +187,17 @@ function renderStats() {
   document.getElementById('panel-status').textContent = active?.status || 'NOT STARTED';
   document.getElementById('panel-next').textContent = next ? next.activity : '--';
   document.getElementById('session-panel').className = `session-panel ${(active?.status || '').toLowerCase().replaceAll(' ', '-')}`;
+  const analytics = buildAnalytics();
   const pct = progressPct(); document.getElementById('current-session').textContent = active?.activity || activeByClock()?.activity || 'No Active Session';
   document.getElementById('clock').textContent = new Date().toLocaleTimeString(); document.getElementById('progress').textContent = `${pct}%`; document.getElementById('meter').value = pct; document.getElementById('today').textContent = new Date().toLocaleDateString('en-IN', { weekday: 'long', day: '2-digit', month: 'short' });
   const technical = state.sessions.filter(s => /ELECTRICAL|PYQ|REVISION/.test(s.activity)).reduce((a, s) => a + s.actualSeconds, 0); const aptitude = state.sessions.filter(s => /APTITUDE|REASONING/.test(s.activity)).reduce((a, s) => a + s.actualSeconds, 0); const gs = Math.max(1, actualSeconds() - technical - aptitude); const total = Math.max(1, actualSeconds());
   document.getElementById('pie').style.background = `conic-gradient(#0057b8 0 ${technical / total * 100}%,#38a800 0 ${(technical + aptitude) / total * 100}%,#ff4b00 0 100%)`;
   document.getElementById('legend').innerHTML = `<b>${Math.round(technical / total * 100)}% TECHNICAL</b><b>${Math.round(aptitude / total * 100)}% APTITUDE</b><b>${Math.round(gs / total * 100)}% GS + ENGLISH</b>`;
   document.getElementById('missions').innerHTML = state.pending.slice(-3).map(p => `<p><b>${p.activity}</b><br><small>${p.originalTime} • ${fmt(p.remainingSeconds)}</small><button data-pending="${p.id}">Start</button></p>`).join('') || '<p>No pending missions.</p>';
-  const done = state.sessions.filter(s => s.status === STATUS.COMPLETED).length; const avg = done ? actualSeconds() / done : 0; document.getElementById('summary').innerHTML = `Planned ${hours(plannedSeconds())}h • Actual ${hours(actualSeconds())}h<br>Remaining ${hours(Math.max(0, plannedSeconds() - actualSeconds()))}h • Completed ${done}<br>Pending ${state.pending.length} • Avg ${fmt(avg)}`;
+  const done = state.sessions.filter(s => s.status === STATUS.COMPLETED).length; const avg = done ? actualSeconds() / done : 0;
+  const longest = analytics.today.longestSession ? `${analytics.today.longestSession.activity} ${fmt(analytics.today.longestSession.seconds)}` : 'None';
+  const insight = analytics.insights[0] || 'Study data will create insights after real sessions.';
+  document.getElementById('summary').innerHTML = `Planned ${hours(plannedSeconds())}h • Actual ${hours(actualSeconds())}h<br>Done ${done} • Pending ${analytics.today.pendingSessions} • Missed ${analytics.today.missedSessions}<br>Extra ${fmt(analytics.today.extraStudySeconds)} • Break ${fmt(analytics.today.totalBreakSeconds)}<br>Week ${hours(analytics.weekly.totalStudySeconds)}h • Streak ${analytics.weekly.currentStreak}/${analytics.weekly.longestStreak}<br>Month ${hours(analytics.monthly.totalStudySeconds)}h • Life ${hours(analytics.lifetime.totalStudySeconds)}h<br><small>${longest}</small><br><em>${insight}</em>`;
 }
 
 schedule.addEventListener('click', e => { const tr = e.target.closest('tr'); const s = state.sessions.find(x => x.id === +tr?.dataset.id); if (!s) return; const act = e.target.dataset.act; if (act === 'start') startSession(s); if (act === 'pause') pauseSession(s); if (act === 'resume') startSession(s); if (act === 'complete') completeSession(s); if (act === 'extend') extendSession(s); if (act === 'note') addNote(s); render(); });
@@ -110,6 +212,12 @@ function movePending(s) { if (s.status !== STATUS.COMPLETED && !state.pending.so
 function extendSession(s) { const dialog = document.getElementById('extend-dialog'); dialog.showModal(); dialog.onclose = () => { let min = dialog.returnValue === 'custom' ? Number(prompt('Custom minutes', '20')) : Number(dialog.returnValue); if (min > 0) { s.remainingSeconds += min * 60; s.extraSeconds += min * 60; state.sessions.filter(x => x.start > s.start).forEach(x => { x.start += min; x.end += min; }); render(); } }; }
 function addNote(s) { const note = prompt('Quick notes (max 5 lines): mistakes, formula, revision reminder', s.notes || ''); if (note !== null) s.notes = note.split('\n').slice(0, 5).join('\n'); }
 
-function tick() { const now = Date.now(); const delta = Math.floor((now - lastTick) / 1000); lastTick = now; const active = currentSession(); if (active?.status === STATUS.RUNNING && delta > 0) { active.actualSeconds += delta; active.remainingSeconds = Math.max(0, active.remainingSeconds - delta); if (active.remainingSeconds === 0) completeSession(active); } state.sessions.filter(s => s.status === STATUS.PAUSED).forEach(s => { s.pauseSeconds += delta; }); if (new Date().getHours() === 22 && new Date().getMinutes() >= 15 && !state.frozenSummary) state.frozenSummary = { at: new Date().toISOString(), actualSeconds: actualSeconds(), completed: state.sessions.filter(s => s.status === STATUS.COMPLETED).length }; render(); }
+function tick() { const now = Date.now(); const delta = Math.floor((now - lastTick) / 1000); lastTick = now; const active = currentSession(); if (active?.status === STATUS.RUNNING && delta > 0) { active.actualSeconds += delta; active.remainingSeconds = Math.max(0, active.remainingSeconds - delta); if (active.remainingSeconds === 0) completeSession(active); } state.sessions.filter(s => s.status === STATUS.PAUSED).forEach(s => { s.pauseSeconds += delta; }); if (new Date().getHours() === 22 && new Date().getMinutes() >= 15 && !state.frozenSummary) freezeDailyReport(); render(); }
+
+function freezeDailyReport() {
+  const analytics = buildAnalytics();
+  state.frozenSummary = { at: new Date().toISOString(), analytics: analytics.today, emailRequired: true, recipient: 'rohandoiphode1@gmail.com', recipientName: 'Officer Rohan', subject: 'Officer Rohan • Daily Mission Report' };
+  state.reports.push(state.frozenSummary);
+}
 
 render(); setInterval(tick, 1000);
