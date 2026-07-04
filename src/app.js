@@ -3,6 +3,7 @@ const HISTORY_KEY = 'aaroh-preparation-history-v1';
 const CLOUD_QUEUE_KEY = 'aaroh-cloud-sync-queue-v1';
 const DAY_KEY = new Date().toISOString().slice(0, 10);
 const STATUS = { NOT_STARTED: 'NOT STARTED', RUNNING: 'RUNNING', PAUSED: 'PAUSED', COMPLETED: 'COMPLETED' };
+const TIMER_PERSIST_INTERVAL_MS = 5000;
 
 const baseRows = [
   ['6:00 – 6:15 AM', 'WAKE UP', 'Gratitude & Plan Your Day', 'Positive Start', '☀️', 'normal'],
@@ -37,6 +38,7 @@ const quotes = [
 const schedule = document.getElementById('schedule');
 let state = loadState();
 let lastTick = Date.now();
+let lastTimerPersistAt = 0;
 
 function makeSession(row, id) {
   const start = parseClock(row[0].split('–')[0]);
@@ -55,12 +57,18 @@ function loadState() {
   return fresh;
 }
 
-function saveState() {
+function saveState({ syncCloud = true } = {}) {
   const analytics = buildAnalytics();
   state.analytics = analytics.today;
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
   persistHistory(analytics);
-  enqueueCloudSync(analytics);
+  if (syncCloud) enqueueCloudSync(analytics);
+}
+
+function saveTimerProgress(now = Date.now()) {
+  if (now - lastTimerPersistAt < TIMER_PERSIST_INTERVAL_MS) return;
+  lastTimerPersistAt = now;
+  saveState({ syncCloud: false });
 }
 
 function readHistory() {
@@ -96,12 +104,13 @@ function activeByClock() { const mins = new Date().getHours() * 60 + new Date().
 function currentSession() { return state.sessions.find(s => s.id === state.activeId); }
 function studySessions() { return state.sessions.filter(s => s.plannedSeconds > 0); }
 
-function render() {
+function render({ persist = true, syncCloud = true } = {}) {
   schedule.innerHTML = state.sessions.map(s => `<tr data-id="${s.id}" class="${s.color} ${s.status.toLowerCase().replaceAll(' ', '-')} ${activeByClock()?.id === s.id ? 'auto-current' : ''}">
     <td>${s.time}<small>${fmt(s.remainingSeconds)}</small></td><td>${s.activity}</td><td>${s.focus}</td><td>${s.benefit}<button class="note" data-act="note">Notes</button></td><td class="actions">${buttons(s)}</td>
   </tr>`).join('');
   document.getElementById('quotes').innerHTML = quotes.map(q => `<div class="quote ${q[1]}"><span>“</span><p>${q[0]}</p><b>”</b></div>`).join('');
-  renderChecklist(); renderRotation(); renderStats(); saveState();
+  renderChecklist(); renderRotation(); renderStats();
+  if (persist) saveState({ syncCloud });
 }
 
 function buttons(s) {
@@ -212,12 +221,35 @@ function movePending(s) { if (s.status !== STATUS.COMPLETED && !state.pending.so
 function extendSession(s) { const dialog = document.getElementById('extend-dialog'); dialog.showModal(); dialog.onclose = () => { let min = dialog.returnValue === 'custom' ? Number(prompt('Custom minutes', '20')) : Number(dialog.returnValue); if (min > 0) { s.remainingSeconds += min * 60; s.extraSeconds += min * 60; state.sessions.filter(x => x.start > s.start).forEach(x => { x.start += min; x.end += min; }); render(); } }; }
 function addNote(s) { const note = prompt('Quick notes (max 5 lines): mistakes, formula, revision reminder', s.notes || ''); if (note !== null) s.notes = note.split('\n').slice(0, 5).join('\n'); }
 
-function tick() { const now = Date.now(); const delta = Math.floor((now - lastTick) / 1000); lastTick = now; const active = currentSession(); if (active?.status === STATUS.RUNNING && delta > 0) { active.actualSeconds += delta; active.remainingSeconds = Math.max(0, active.remainingSeconds - delta); if (active.remainingSeconds === 0) completeSession(active); } state.sessions.filter(s => s.status === STATUS.PAUSED).forEach(s => { s.pauseSeconds += delta; }); if (new Date().getHours() === 22 && new Date().getMinutes() >= 15 && !state.frozenSummary) freezeDailyReport(); render(); }
+function tick() {
+  const now = Date.now();
+  const delta = Math.floor((now - lastTick) / 1000);
+  lastTick = now;
+  const active = currentSession();
+  let changed = false;
+  if (active?.status === STATUS.RUNNING && delta > 0) {
+    active.actualSeconds += delta;
+    active.remainingSeconds = Math.max(0, active.remainingSeconds - delta);
+    changed = true;
+    if (active.remainingSeconds === 0) completeSession(active);
+  }
+  state.sessions.filter(s => s.status === STATUS.PAUSED).forEach(s => { s.pauseSeconds += delta; changed = true; });
+  if (new Date().getHours() === 22 && new Date().getMinutes() >= 15 && !state.frozenSummary) {
+    freezeDailyReport();
+    changed = false;
+  }
+  if (changed) saveTimerProgress(now);
+  render({ persist: false });
+}
 
 function freezeDailyReport() {
   const analytics = buildAnalytics();
   state.frozenSummary = { at: new Date().toISOString(), analytics: analytics.today, emailRequired: true, recipient: 'rohandoiphode1@gmail.com', recipientName: 'Officer Rohan', subject: 'Officer Rohan • Daily Mission Report' };
   state.reports.push(state.frozenSummary);
+  saveState();
 }
 
-render(); setInterval(tick, 1000);
+window.addEventListener('pagehide', () => saveState({ syncCloud: false }));
+window.addEventListener('beforeunload', () => saveState({ syncCloud: false }));
+
+render({ syncCloud: false }); setInterval(tick, 1000);
